@@ -14,7 +14,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 from core.alarm.alarm_engine import AlarmEngine, FaultLevels
 from services.rtu_comm import RtuWriter
@@ -26,6 +26,19 @@ DEFAULT_STATE_PATH = Path("/tmp/sensor_fault_state.json")
 class _LocationSnapshot:
     value: float
     level: int
+
+
+@dataclass
+class _StateSnapshot:
+    crank_left: _LocationSnapshot
+    crank_right: _LocationSnapshot
+    tail_bearing: _LocationSnapshot
+    mid_bearing: _LocationSnapshot
+    belt: _LocationSnapshot
+    line: _LocationSnapshot
+    elec_a: bool
+    elec_b: bool
+    elec_c: bool
 
 
 class AlarmService:
@@ -40,41 +53,60 @@ class AlarmService:
         self._engine = AlarmEngine()
         self._rtu = RtuWriter()
 
-    def _load_state(self) -> Dict[str, _LocationSnapshot]:
+    def _load_state(self) -> Optional[_StateSnapshot]:
         try:
             with self._state_path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
         except FileNotFoundError:
-            return {}
+            return None
         except Exception as exc:  # noqa: BLE001
             print(f"[alarm_service] Failed to read state: {exc}", file=sys.stderr)
-            return {}
+            return None
 
         try:
             cl = data["crank_left"]
             cr = data["crank_right"]
             tb = data["tail_bearing"]
             mb = data["mid_bearing"]
-        except KeyError:
-            return {}
 
-        return {
-            "crank_left": _LocationSnapshot(cl["value"], cl["level"]),
-            "crank_right": _LocationSnapshot(cr["value"], cr["level"]),
-            "tail_bearing": _LocationSnapshot(tb["value"], tb["level"]),
-            "mid_bearing": _LocationSnapshot(mb["value"], mb["level"]),
-        }
+            # Read photo sensors, default to 0 if missing (backward compatibility)
+            belt_data = data.get("belt", {"value": 0.0, "level": 0})
+            line_data = data.get("line", {"value": 0.0, "level": 0})
+
+            # Read electrical status, default to True if missing (backward compatibility)
+            ea = data.get("elec_a", True)
+            eb = data.get("elec_b", True)
+            ec = data.get("elec_c", True)
+        except KeyError:
+            return None
+
+        return _StateSnapshot(
+            crank_left=_LocationSnapshot(cl["value"], cl["level"]),
+            crank_right=_LocationSnapshot(cr["value"], cr["level"]),
+            tail_bearing=_LocationSnapshot(tb["value"], tb["level"]),
+            mid_bearing=_LocationSnapshot(mb["value"], mb["level"]),
+            belt=_LocationSnapshot(belt_data["value"], belt_data["level"]),
+            line=_LocationSnapshot(line_data["value"], line_data["level"]),
+            elec_a=ea,
+            elec_b=eb,
+            elec_c=ec,
+        )
 
     def _process_once(self) -> None:
-        snapshots = self._load_state()
-        if not snapshots:
+        snapshot = self._load_state()
+        if not snapshot:
             return
 
         faults = FaultLevels(
-            crank_left=snapshots["crank_left"].level,
-            crank_right=snapshots["crank_right"].level,
-            tail_bearing=snapshots["tail_bearing"].level,
-            mid_bearing=snapshots["mid_bearing"].level,
+            crank_left=snapshot.crank_left.level,
+            crank_right=snapshot.crank_right.level,
+            tail_bearing=snapshot.tail_bearing.level,
+            mid_bearing=snapshot.mid_bearing.level,
+            belt=snapshot.belt.level,
+            line=snapshot.line.level,
+            elec_a=snapshot.elec_a,
+            elec_b=snapshot.elec_b,
+            elec_c=snapshot.elec_c,
         )
         alarm_level, rtu_registers = self._engine.evaluate(faults)
 
@@ -108,8 +140,8 @@ def _install_signal_handlers(service: AlarmService) -> None:
 
 
 def main() -> None:
-    # Update cycle to 30 seconds as requested
-    service = AlarmService(interval=30.0)
+    # Update cycle to 10 seconds as requested
+    service = AlarmService(interval=10.0)
     _install_signal_handlers(service)
     service.run_forever()
 

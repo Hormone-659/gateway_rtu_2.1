@@ -39,6 +39,15 @@ class SensorFaultState:
     crank_right: LocationFaultState
     tail_bearing: LocationFaultState
     mid_bearing: LocationFaultState
+    belt: LocationFaultState
+    line: LocationFaultState
+
+    # Electrical phase status (True=OK, False=Missing/Zero)
+    elec_a: bool = True
+    elec_b: bool = True
+    elec_c: bool = True
+    # Store raw electrical values for logging
+    elec_vals: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 class SensorService:
@@ -53,18 +62,30 @@ class SensorService:
     ) -> None:
         self._client = ModbusRtuClient(RtuConfig(port=port))
 
+        # Client for photoelectric sensors on ttyS3
+        self._client_photo = ModbusRtuClient(RtuConfig(port="/dev/ttyS3"))
+
         # Create independent threshold engines for each location
         # 调整阈值：之前是 1000/2000/3000 太大了，单位是 mm/s
         # 假设正常运行 < 5mm/s，故障可能在 10~20mm/s
         cfg = SimpleThresholdConfig(level1=5.0, level2=10.0, level3=20.0)
+
+        # Config for photoelectric sensors (adjust thresholds as needed)
+        # User updated thresholds: 310, 320, 330
+        cfg_photo = SimpleThresholdConfig(level1=310.0, level2=320.0, level3=330.0)
+
         self._engines = {
             "crank_left": SpeedThresholdEngine(cfg),
             "crank_right": SpeedThresholdEngine(cfg),
             "tail_bearing": SpeedThresholdEngine(cfg),
             "mid_bearing": SpeedThresholdEngine(cfg),
+            "belt": SpeedThresholdEngine(cfg_photo),
+            "line": SpeedThresholdEngine(cfg_photo),
         }
 
         self._unit_ids = unit_ids
+        # Default unit ID for electrical parameters (can be configured if needed)
+        self._elec_unit_id = 1
         self._state_path = state_path
         self._interval = interval
         self._stop = threading.Event()
@@ -86,6 +107,44 @@ class SensorService:
         except Exception:
             # Log could be added here, but might be too noisy if sensor is permanently offline
             return 0.0, 0.0, 0.0
+
+    def _read_elec_status(self) -> Tuple[Tuple[bool, bool, bool], Tuple[float, float, float]]:
+        """Read electrical parameters (Phase A, B, C current) from registers 40103-40105.
+
+        Register 40103 -> Address 102 (0-based)
+        Register 40104 -> Address 103
+        Register 40105 -> Address 104
+
+        Returns: ((ok_a, ok_b, ok_c), (val_a, val_b, val_c))
+        """
+        try:
+            self._client.unit_id = self._elec_unit_id
+            # Read 3 registers starting at 102
+            regs = self._client.read_holding_registers(102, 3)
+
+            val_a = float(regs[0])
+            val_b = float(regs[1])
+            val_c = float(regs[2])
+
+            # Check if values are > 0
+            ok_a = val_a > 0
+            ok_b = val_b > 0
+            ok_c = val_c > 0
+            return (ok_a, ok_b, ok_c), (val_a, val_b, val_c)
+        except Exception as e:
+            print(f"[sensor_service] Warning: Failed to read electrical params: {e}", file=sys.stderr)
+            # If read fails, return False (ERR) and 0 values so it's visible in logs
+            return (False, False, False), (0.0, 0.0, 0.0)
+
+    def _read_photo_sensor(self, unit_id: int, address: int) -> float:
+        """Read single register from photoelectric sensor."""
+        try:
+            self._client_photo.unit_id = unit_id
+            regs = self._client_photo.read_input_registers(address, 1)
+            return float(regs[0])
+        except Exception as e:
+            print(f"[sensor_service] Warning: Failed to read photo sensor (uid={unit_id}, addr={address}): {e}", file=sys.stderr)
+            return 0.0
 
     def _acquire_once(self) -> SensorFaultState:
         """Read all configured locations once and compute fault levels."""
@@ -124,6 +183,18 @@ class SensorService:
         mb_lvl = self._engines["mid_bearing"].evaluate_xyz(mb_vx, mb_vy, mb_vz)
         mb_max = max(mb_vx, mb_vy, mb_vz)
 
+        # Read Photoelectric Sensors (Belt & Line)
+        # User update: Belt=6, Line(Horsehead)=5
+        # User specified register address 0 (0x0000) for distance in mm
+        belt_val = self._read_photo_sensor(6, 0)
+        belt_lvl = self._engines["belt"].evaluate_single(belt_val)
+
+        line_val = self._read_photo_sensor(5, 0)
+        line_lvl = self._engines["line"].evaluate_single(line_val)
+
+        # Read electrical status
+        (elec_a, elec_b, elec_c), elec_vals = self._read_elec_status()
+
         ts = time.time()
         return SensorFaultState(
             timestamp=ts,
@@ -131,6 +202,12 @@ class SensorService:
             crank_right=LocationFaultState(cr_max, cr_lvl),
             tail_bearing=LocationFaultState(tb_max, tb_lvl),
             mid_bearing=LocationFaultState(mb_max, mb_lvl),
+            belt=LocationFaultState(belt_val, belt_lvl),
+            line=LocationFaultState(line_val, line_lvl),
+            elec_a=elec_a,
+            elec_b=elec_b,
+            elec_c=elec_c,
+            elec_vals=elec_vals,
         )
 
     def _write_state(self, state: SensorFaultState) -> None:
@@ -148,15 +225,25 @@ class SensorService:
             try:
                 state = self._acquire_once()
                 self._write_state(state)
-                # 打印心跳日志，方便调试
-                # 找出当前所有传感器中的最大值，方便观察
-                max_val = max(
-                    state.crank_left.value,
-                    state.crank_right.value,
-                    state.tail_bearing.value,
-                    state.mid_bearing.value
+                # 打印详细日志：显示各传感器数值和电参状态
+                vib_log = (
+                    f"CL:{state.crank_left.value:.1f} "
+                    f"CR:{state.crank_right.value:.1f} "
+                    f"TB:{state.tail_bearing.value:.1f} "
+                    f"MB:{state.mid_bearing.value:.1f}"
                 )
-                print(f"[sensor_service] Data updated. Max Vib: {max_val:.2f} mm/s", file=sys.stderr)
+
+                photo_log = f"Belt:{state.belt.value:.1f} Line:{state.line.value:.1f}"
+
+                # 显示电参状态和具体数值
+                ea_str = "OK" if state.elec_a else "ERR"
+                eb_str = "OK" if state.elec_b else "ERR"
+                ec_str = "OK" if state.elec_c else "ERR"
+
+                va, vb, vc = state.elec_vals
+                elec_log = f"Elec:{ea_str}({va:.0f})/{eb_str}({vb:.0f})/{ec_str}({vc:.0f})"
+
+                print(f"[sensor_service] {vib_log} | {photo_log} | {elec_log}", file=sys.stderr)
             except Exception as exc:  # noqa: BLE001
                 print(f"[sensor_service] Error: {exc}", file=sys.stderr)
             self._stop.wait(self._interval)

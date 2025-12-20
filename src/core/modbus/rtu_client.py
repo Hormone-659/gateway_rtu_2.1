@@ -117,6 +117,26 @@ class ModbusRtuClient:
             raise IOError("Modbus RTU read_holding_registers failed or returned no data")
         return list(result.registers)
 
+    def read_input_registers(self, address: int, count: int = 1) -> List[int]:
+        """Read one or more input registers (Function 0x04).
+
+        :param address: Modbus register address (0-based or sensor-specific).
+        :param count: number of consecutive registers to read.
+        :return: list of register values as Python ints.
+        """
+
+        if self._client is None:
+            self.connect()
+
+        result = self._client.read_input_registers(  # type: ignore[union-attr]
+            address=address,
+            count=count,
+            unit=self._config.unit_id,
+        )
+        if not hasattr(result, "registers") or result.registers is None:
+            raise IOError("Modbus RTU read_input_registers failed or returned no data")
+        return list(result.registers)
+
     def write_single_register(self, address: int, value: int) -> None:
         """Write a single holding register using Modbus function 0x06."""
 

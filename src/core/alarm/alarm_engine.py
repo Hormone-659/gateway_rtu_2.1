@@ -34,6 +34,15 @@ class FaultLevels:
     tail_bearing: int = 0
     mid_bearing: int = 0
 
+    # Photoelectric sensors
+    belt: int = 0
+    line: int = 0
+
+    # Electrical phase status (True=OK, False=Missing/Zero)
+    elec_a: bool = True
+    elec_b: bool = True
+    elec_c: bool = True
+
 
 class AlarmEngine:
     """Bridge between fault levels and existing alarm_logic functions."""
@@ -63,6 +72,16 @@ class AlarmEngine:
             crank_right_level=faults.crank_right,
             tail_bearing_level=faults.tail_bearing,
             mid_bearing_level=faults.mid_bearing,
+
+            # Map photoelectric sensors
+            belt_level=faults.belt,
+            line_level=faults.line,
+
+            # Map electrical status
+            elec_phase_a_ok=faults.elec_a,
+            elec_phase_b_ok=faults.elec_b,
+            elec_phase_c_ok=faults.elec_c,
+
             # ...existing code for other fields with safe defaults...
         )
 
