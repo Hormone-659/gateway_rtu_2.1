@@ -140,8 +140,8 @@ def _install_signal_handlers(service: AlarmService) -> None:
 
 
 def main() -> None:
-    # Update cycle to 10 seconds as requested
-    service = AlarmService(interval=10.0)
+    # Update cycle to 1 second as requested
+    service = AlarmService(interval=1.0)
     _install_signal_handlers(service)
     service.run_forever()
 
