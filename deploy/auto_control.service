@@ -1,0 +1,16 @@
+[Unit]
+Description=Gateway Auto Control PLC Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/gateway_RTU/deploy
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/venv38/bin/python auto_control_plc.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
