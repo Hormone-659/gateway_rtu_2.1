@@ -4,9 +4,10 @@
 # 退出方法：按 Ctrl+C
 
 echo "========================================================"
-echo " 正在监视 Gateway 服务日志 (Sensor + Alarm)"
+echo " 正在监视 Gateway 服务日志 (Sensor + Alarm + AutoControl)"
 echo " 采集服务: 每 1 秒更新一次"
 echo " 报警服务: 每 30 秒更新一次"
+echo " 自动控制: 实时"
 echo " 按 Ctrl+C 退出查看 (服务会在后台继续运行)"
 echo "========================================================"
 echo ""
@@ -15,5 +16,5 @@ echo ""
 # -f 实时跟随 (Follow)
 # -n 20 显示最近 20 行历史
 # --no-pager 防止分页
-journalctl -u sensor.service -u alarm.service -f -n 20 --no-pager
+journalctl -u sensor.service -u alarm.service -u auto_control.service -f -n 20 --no-pager
 

@@ -55,7 +55,13 @@ done
 
 # 4. 安装依赖
 echo "正在安装依赖..."
-"$PYTHON_BIN" -m pip install -r "$PROJECT_ROOT/requirements.txt"
+if [ -d "$SCRIPT_DIR/deps" ]; then
+    echo "检测到离线依赖包，尝试离线安装..."
+    "$PYTHON_BIN" -m pip install --no-index --find-links="$SCRIPT_DIR/deps" -r "$PROJECT_ROOT/requirements.txt"
+else
+    echo "未找到离线依赖包，尝试在线安装..."
+    "$PYTHON_BIN" -m pip install -r "$PROJECT_ROOT/requirements.txt"
+fi
 
 # 5. 部署 Systemd 服务
 echo "部署 Systemd 服务..."
@@ -83,11 +89,13 @@ fi
 echo "启用并重启服务..."
 systemctl enable sensor.service
 systemctl enable alarm.service
+systemctl enable auto_control.service
 systemctl restart sensor.service
 systemctl restart alarm.service
+systemctl restart auto_control.service
 
 echo "=== 部署完成 ==="
-echo "检查状态命令: systemctl status sensor.service alarm.service"
+echo "检查状态命令: systemctl status sensor.service alarm.service auto_control.service"
 
 
 # 重新加载 systemd 配置

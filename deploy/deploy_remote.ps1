@@ -2,7 +2,7 @@
 # 用于将项目文件通过 SSH/SCP 传输到网关
 
 # --- 配置项 (请根据实际情况修改) ---
-$GatewayIP = "192.168.1.100"   # 网关的 IP 地址
+$GatewayIP = "12.42.7.133"   # 网关的 IP 地址
 $GatewayUser = "root"          # 网关的 SSH 用户名
 $RemotePath = "/tmp/gateway_deploy" # 临时上传路径
 # --------------------------------

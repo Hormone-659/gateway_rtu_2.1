@@ -12,7 +12,7 @@
     python alarm_rtu_ui.py
 
 前置条件：
-- RTU 设备 IP 为 192.168.0.200，端口 502，从站地址 unit=1（如不同可在本文件中修改或在界面中调整）。
+- RTU 设备 IP 为 12.42.7.135，端口 502，从站地址 unit=1（如不同可在本文件中修改或在界面中调整）。
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ except Exception:  # pragma: no cover - 如果 sensor 模块不可用，则自�
     map_to_state_fields = None
 
 
-RTU_IP_DEFAULT = "192.168.0.200"
+RTU_IP_DEFAULT = "12.42.7.135"
 RTU_PORT_DEFAULT = 502
 RTU_UNIT_ID_DEFAULT = 1  # Modbus 从站地址，可按现场实际修改
 

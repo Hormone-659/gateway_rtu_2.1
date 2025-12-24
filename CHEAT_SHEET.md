@@ -16,7 +16,7 @@ sudo ./deploy/install.sh
 
 ## 2. 日志查看 (最常用)
 
-**实时监视所有日志**（采集数据 + 报警写入）：
+**实时监视所有日志**（采集数据 + 报警写入 + 自动控制）：
 ```bash
 cd /opt/gateway_rtu/deploy
 ./watch_logs.sh
@@ -33,24 +33,44 @@ journalctl -u sensor.service -f
 journalctl -u alarm.service -f
 ```
 
+**单独查看自动控制服务日志** (监测 40101：值为 81 立即写 1，值为 82 延时写 2)：
+```bash
+journalctl -u auto_control.service -f
+```
+
 ## 3. 服务管理
 
 **重启所有服务** (配置修改或代码更新后)：
 ```bash
-systemctl restart sensor.service alarm.service
+systemctl restart sensor.service alarm.service auto_control.service
 ```
 
 **停止服务**：
 ```bash
-systemctl stop sensor.service alarm.service
+systemctl stop sensor.service alarm.service auto_control.service
 ```
 
 **查看服务运行状态**：
 ```bash
-systemctl status sensor.service alarm.service
+systemctl status sensor.service alarm.service auto_control.service
 ```
 
-## 4. 故障诊断工具
+## 4. 手动调试脚本
+
+如果服务运行异常，可以先停止服务，然后手动运行脚本查看详细输出。
+
+**手动运行自动控制脚本**：
+```bash
+# 1. 先停止服务，避免冲突
+systemctl stop auto_control.service
+
+# 2. 手动运行 (使用虚拟环境 Python)
+cd /opt/gateway_rtu/deploy
+/root/venv38/bin/python auto_control_plc.py
+```
+*(按 `Ctrl+C` 停止)*
+
+## 5. 故障诊断工具
 
 **扫描串口设备** (检查传感器是否连接，波特率是否正确)：
 ```bash
@@ -74,7 +94,7 @@ cd /opt/gateway_rtu/deploy
 - TCP 模式：
   ```bash
   cd /opt/gateway_rtu/deploy
-  /root/venv38/bin/python monitor_rtu.py --mode tcp --host 192.168.0.200 --unit 1 --ranges "43501-43520" --rate 1
+  /root/venv38/bin/python monitor_rtu.py --mode tcp --host 12.42.7.135 --unit 1 --ranges "43501-43520" --rate 1
   ```
 - RTU 串口模式：
   ```bash
@@ -82,13 +102,20 @@ cd /opt/gateway_rtu/deploy
   /root/venv38/bin/python monitor_rtu.py --mode rtu --serial /dev/ttyS2 --baud 9600 --parity N --stopbits 1 --unit 1 --ranges "43501-43520" --rate 1
   ```
 
+**手动控制 PLC 寄存器** (向 /dev/ttyS1 的 ID=2, Addr=0 写入值)：
+```bash
+cd /opt/gateway_rtu/deploy
+/root/venv38/bin/python write_plc_simple.py
+```
+*(交互模式：输入 1 执行刹车，输入 2 执行松刹车)*
+
 **手动运行采集程序** (绕过 Systemd，用于调试启动报错)：
 ```bash
 cd /opt/gateway_rtu/deploy
 sudo ./debug_run.sh
 ```
 
-## 5. 关键配置文件位置
+## 6. 关键配置文件位置
 
 如果需要修改端口、地址或阈值，请编辑以下文件：
 
@@ -102,7 +129,7 @@ sudo ./debug_run.sh
     `src/gateway/alarm/alarm_play/alarm_logic.py`
     *   修改写入规则: 搜索 `build_rtu_registers`
 
-## 6. 开机自启设置
+## 7. 开机自启设置
 
 **强制启用开机自启并验证**：
 ```bash

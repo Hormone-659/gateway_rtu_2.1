@@ -16,13 +16,20 @@ from __future__ import annotations
 
 import socket
 import struct
+import time
+import subprocess
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+
+try:
+    import serial
+except ImportError:
+    serial = None
 
 
 @dataclass
 class RtuTcpConfig:
-    host: str = "192.168.0.200"
+    host: str = "12.42.7.135"
     port: int = 502
     unit_id: int = 1  # Modbus 从站地址
     timeout: float = 3.0
@@ -72,6 +79,10 @@ class RtuWriter:
             self._append_log(f"[rtu_comm] ERROR while writing RTU: {exc}")
             # 遇到异常时尝试关闭连接，下一次写入时会重新连接
             self._close_socket()
+        finally:
+            # Ensure socket is closed after operation to support devices with limited connections
+            # self._close_socket()
+            pass
 
     def read_holding_registers(self, address: int, count: int = 1) -> List[int]:
         """Read holding registers from the RTU/PLC using Modbus TCP.
@@ -101,6 +112,9 @@ class RtuWriter:
             self._append_log(f"[rtu_comm] ERROR while reading RTU: {exc}")
             self._close_socket()
             return []
+
+        # Close socket immediately after read
+        # self._close_socket()
 
         if len(resp) < 2:
             raise RuntimeError(f"Invalid response length for read_holding: {len(resp)}")

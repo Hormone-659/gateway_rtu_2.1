@@ -100,7 +100,7 @@ class AlarmSimulatorUI:
         btn_eval.grid(row=row, column=0, sticky="ew")
 
         # 新增：写入 RTU 的按钮
-        btn_rtu = ttk.Button(frame, text="写入 RTU (192.168.0.200)", command=self.on_write_rtu)
+        btn_rtu = ttk.Button(frame, text="写入 RTU (12.42.7.135)", command=self.on_write_rtu)
         btn_rtu.grid(row=row, column=1, sticky="ew")
 
         btn_quit = ttk.Button(frame, text="退出", command=self.master.destroy)

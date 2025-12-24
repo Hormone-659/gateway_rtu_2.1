@@ -11,14 +11,20 @@ systemctl enable sensor.service
 echo "正在启用 alarm.service ..."
 systemctl enable alarm.service
 
+echo "正在启用 auto_control.service ..."
+systemctl enable auto_control.service
+
 echo ""
 echo "=== 验证自启动状态 ==="
 
 # 2. 检查状态
 SENSOR_STATUS=$(systemctl is-enabled sensor.service)
 ALARM_STATUS=$(systemctl is-enabled alarm.service)
+AUTO_CONTROL_STATUS=$(systemctl is-enabled auto_control.service)
 
 echo "Sensor Service 自启状态: $SENSOR_STATUS"
+echo "Alarm Service 自启状态: $ALARM_STATUS"
+echo "Auto Control Service 自启状态: $AUTO_CONTROL_STATUS"
 if [ "$SENSOR_STATUS" == "enabled" ]; then
     echo "✅ Sensor 服务已设置为开机自启"
 else

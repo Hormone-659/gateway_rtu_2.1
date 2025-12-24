@@ -7,6 +7,8 @@ echo "========================================"
 systemctl status sensor.service --no-pager
 echo ""
 systemctl status alarm.service --no-pager
+echo ""
+systemctl status auto_control.service --no-pager
 
 echo ""
 echo "========================================"
@@ -17,4 +19,7 @@ journalctl -u sensor.service -n 20 --no-pager
 echo ""
 echo "--- Alarm Service Logs ---"
 journalctl -u alarm.service -n 20 --no-pager
+echo ""
+echo "--- Auto Control Service Logs ---"
+journalctl -u auto_control.service -n 20 --no-pager
 

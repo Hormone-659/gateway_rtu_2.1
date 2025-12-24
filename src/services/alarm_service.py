@@ -12,6 +12,11 @@ import signal
 import sys
 import threading
 import time
+import struct
+try:
+    import serial
+except ImportError:
+    serial = None
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
@@ -20,6 +25,7 @@ from core.alarm.alarm_engine import AlarmEngine, FaultLevels
 from services.rtu_comm import RtuWriter
 
 DEFAULT_STATE_PATH = Path("/tmp/sensor_fault_state.json")
+ELEC_STATE_PATH = Path("/tmp/elec_params.json")
 
 
 @dataclass
@@ -52,6 +58,125 @@ class AlarmService:
         self._stop = threading.Event()
         self._engine = AlarmEngine()
         self._rtu = RtuWriter()
+        self._last_alarm_level = -1  # Initialize with an invalid level
+        self._last_3501_value: Optional[int] = None
+
+        # PLC Control State
+        self._plc_port = '/dev/ttyS1'
+        self._plc_baud = 9600
+        self._plc_unit = 2
+        self._plc_write_addr = 0
+        self._plc_ser: Optional[serial.Serial] = None
+        self._plc_timer_start = 0
+        self._plc_action_done = False
+        self._last_val_plc = -1
+
+    def _init_plc_serial(self):
+        if not serial:
+            print("[alarm_service] pyserial not installed, PLC control disabled", file=sys.stderr)
+            return
+        try:
+            self._plc_ser = serial.Serial(
+                port=self._plc_port,
+                baudrate=self._plc_baud,
+                bytesize=8,
+                parity=serial.PARITY_NONE,
+                stopbits=1,
+                timeout=1.0,
+                xonxoff=False,
+                rtscts=False,
+                dsrdtr=False
+            )
+            print(f"[alarm_service] PLC Serial {self._plc_port} opened", file=sys.stderr)
+        except Exception as e:
+            print(f"[alarm_service] Failed to open PLC serial: {e}", file=sys.stderr)
+
+    def _calculate_crc(self, data):
+        crc = 0xFFFF
+        for pos in data:
+            crc ^= pos
+            for i in range(8):
+                if (crc & 1) != 0:
+                    crc >>= 1
+                    crc ^= 0xA001
+                else:
+                    crc >>= 1
+        return struct.pack('<H', crc)
+
+    def _write_plc_robust(self, value):
+        if not self._plc_ser:
+            self._init_plc_serial()
+        if not self._plc_ser:
+            return
+
+        try:
+            cmd = struct.pack('>B B H H', self._plc_unit, 6, self._plc_write_addr, value)
+            full = cmd + self._calculate_crc(cmd)
+
+            self._plc_ser.reset_input_buffer()
+            self._plc_ser.reset_output_buffer()
+            self._plc_ser.write(full)
+            time.sleep(0.05)
+            time.sleep(0.2)
+            resp = self._plc_ser.read(8)
+
+            if len(resp) == 8:
+                print(f"[alarm_service] PLC Write Success: {resp.hex().upper()}", file=sys.stderr)
+            else:
+                print(f"[alarm_service] PLC Write No Response (len={len(resp)})", file=sys.stderr)
+
+        except Exception as e:
+            print(f"[alarm_service] PLC Write Exception: {e}", file=sys.stderr)
+            # Try to reopen next time
+            try:
+                self._plc_ser.close()
+            except:
+                pass
+            self._plc_ser = None
+
+    def _process_plc_control(self, current_rtu_101: int):
+        """
+        PLC Control Logic:
+        - If 101 == 82: Start timer. If > 65s, write 2 to PLC addr 0.
+        - If 101 == 81: Immediately write 1 to PLC addr 0.
+        """
+        if current_rtu_101 is None:
+            return
+
+        # State change detection
+        if current_rtu_101 != self._last_val_plc:
+            print(f"[alarm_service] PLC Control State Change: {self._last_val_plc} -> {current_rtu_101}", file=sys.stderr)
+            self._last_val_plc = current_rtu_101
+            self._plc_action_done = False
+            self._plc_timer_start = 0
+
+            if current_rtu_101 == 82:
+                self._plc_timer_start = time.time()
+            elif current_rtu_101 == 81:
+                print(f"[alarm_service] Trigger PLC Write 1 (Immediate)", file=sys.stderr)
+                self._write_plc_robust(1)
+                # Also write 0 to 3503
+                try:
+                    self._rtu.write_registers({3503: 0}, -1)
+                    print(f"[alarm_service] Wrote 0 to 3503", file=sys.stderr)
+                except Exception as e:
+                    print(f"[alarm_service] Failed to write 3503: {e}", file=sys.stderr)
+                self._plc_action_done = True
+
+        # Timer logic for 82
+        if current_rtu_101 == 82 and not self._plc_action_done:
+            elapsed = time.time() - self._plc_timer_start
+            print(f"[alarm_service] PLC Timer: {elapsed:.1f}/65.0s", file=sys.stderr)
+            if self._plc_timer_start > 0 and (elapsed >= 65):
+                print(f"[alarm_service] Trigger PLC Write 2 (Timer > 65s)", file=sys.stderr)
+                self._write_plc_robust(2)
+                # Also write 1 to 3503
+                try:
+                    self._rtu.write_registers({3503: 1}, -1)
+                    print(f"[alarm_service] Wrote 1 to 3503", file=sys.stderr)
+                except Exception as e:
+                    print(f"[alarm_service] Failed to write 3503: {e}", file=sys.stderr)
+                self._plc_action_done = True
 
     def _load_state(self) -> Optional[_StateSnapshot]:
         try:
@@ -97,7 +222,47 @@ class AlarmService:
         if not snapshot:
             return
 
-        faults = FaultLevels(
+        # 1. Read current RTU registers (101 and 102)
+        current_rtu_101 = None
+        current_rtu_102 = None
+        try:
+            # Read 2 registers starting at 101
+            vals = self._rtu.read_holding_registers(101, 2)
+            if vals and len(vals) >= 1:
+                current_rtu_101 = vals[0]
+            if vals and len(vals) >= 2:
+                current_rtu_102 = vals[1]
+
+            if current_rtu_101 is not None:
+                # DEBUG: Print every read to confirm connectivity
+                # print(f"[alarm_service] Read RTU 101: {current_rtu_101}, 102: {current_rtu_102}", file=sys.stderr)
+                pass
+        except Exception as exc:
+            print(f"[alarm_service] Failed to read RTU 101/102: {exc}", file=sys.stderr)
+
+        # === PLC Control Logic ===
+        if current_rtu_101 is not None:
+            self._process_plc_control(current_rtu_101)
+
+        # Logic for 43501 based on 40102
+        if current_rtu_102 is not None:
+            target_43501 = None
+            if current_rtu_102 == 2:
+                target_43501 = 0
+            elif current_rtu_102 == 1:
+                target_43501 = 1
+
+            if target_43501 is not None and target_43501 != self._last_3501_value:
+                print(f"[alarm_service] RTU 102 is {current_rtu_102}, writing {target_43501} to 43501...", file=sys.stderr)
+                try:
+                    self._rtu.write_registers({3501: target_43501}, -1)
+                    self._last_3501_value = target_43501
+                except Exception as exc:
+                    print(f"[alarm_service] Failed to write 43501: {exc}", file=sys.stderr)
+
+
+        # 2. Convert snapshot to FaultLevels
+        levels = FaultLevels(
             crank_left=snapshot.crank_left.level,
             crank_right=snapshot.crank_right.level,
             tail_bearing=snapshot.tail_bearing.level,
@@ -109,17 +274,7 @@ class AlarmService:
             elec_c=snapshot.elec_c,
         )
 
-        # Read current 101 value from RTU
-        current_rtu_101 = None
-        try:
-            # Read 1 register starting at 101
-            values = self._rtu.read_holding_registers(101, 1)
-            if values:
-                current_rtu_101 = values[0]
-        except Exception as e:
-            print(f"[alarm_service] Warning: Failed to read RTU 101: {e}", file=sys.stderr)
-
-        alarm_level, rtu_registers = self._engine.evaluate(faults, current_rtu_101=current_rtu_101)
+        alarm_level, rtu_registers = self._engine.evaluate(levels, current_rtu_101=current_rtu_101)
 
         # === 关键修改：注入 101 寄存器逻辑 ===
         # 如果是 3 级报警，强制将 101 寄存器设为 82
@@ -127,10 +282,23 @@ class AlarmService:
         if alarm_level == 3:
             rtu_registers[101] = 82
 
-        # Write to RTU and log internally.
-        # 注意：请确保 services/rtu_comm.py 中的 RtuWriter.write_registers 方法
-        # 内部调用了 client.write_registers_map(registers) 而不是旧的 write_multiple_registers
-        self._rtu.write_registers(rtu_registers, alarm_level)
+        # === 关键修改：注入 43501 (3501) 寄存器逻辑 ===
+        # 确保 evaluate 返回的 registers 不会覆盖我们的 43501 逻辑
+        if current_rtu_102 is not None:
+            if current_rtu_102 == 2:
+                rtu_registers[3501] = 0
+            elif current_rtu_102 == 1:
+                rtu_registers[3501] = 1
+
+        # Only write to RTU if the alarm level has changed
+        if alarm_level != self._last_alarm_level:
+            print(f"[alarm_service] Alarm level changed from {self._last_alarm_level} to {alarm_level}. Writing to RTU...", file=sys.stderr)
+            self._rtu.write_registers(rtu_registers, alarm_level)
+            self._last_alarm_level = alarm_level
+        else:
+            # Optional: Log that we are skipping write
+            # print(f"[alarm_service] Alarm level {alarm_level} unchanged. Skipping RTU write.", file=sys.stderr)
+            pass
 
     def run_forever(self) -> None:
         print(f"[alarm_service] Starting alarm evaluation loop (interval={self._interval}s)...", file=sys.stderr)

@@ -23,5 +23,5 @@
 
 参见 `deploy/monitor_rtu.py`，可通过基础实现（无 pymodbus）读取 40101-40108、40501-40521 等范围：
 ```bash
-python deploy/monitor_rtu.py --mode tcp --host 192.168.0.200 --unit 1 --ranges "40101-40108,40501-40521" --rate 1
+python deploy/monitor_rtu.py --mode tcp --host 12.42.7.135 --unit 1 --ranges "40101-40108,40501-40521" --rate 1
 ```

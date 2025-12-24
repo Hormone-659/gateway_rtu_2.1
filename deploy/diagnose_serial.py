@@ -40,89 +40,10 @@ def scan_ports():
     for p in patterns:
         found = glob.glob(p)
         ports.extend(found)
-    return sorted(ports)
 
-def test_raw_modbus(port, baudrate=9600, parity='N', slave_id=1, reg_addr=58):
-    """使用原生 pyserial 发送 Modbus RTU 请求"""
-
-    try:
-        # 映射校验位
-        p_val = serial.PARITY_NONE
-        if parity == 'E': p_val = serial.PARITY_EVEN
-        elif parity == 'O': p_val = serial.PARITY_ODD
-
-        ser = serial.Serial(
-            port=port,
-            baudrate=baudrate,
-            bytesize=8,
-            parity=p_val,
-            stopbits=1,
-            timeout=0.2  # 快速超时
-        )
-
-        # 尝试开启 RS485 模式 (针对板载串口)
-        if sys.platform.startswith("linux") and ("ttyS" in port or "ttymxc" in port):
-            try:
-                ser.rs485_mode = serial.rs485.RS485Settings()
-            except Exception:
-                pass
-
-        # 构建 Modbus RTU 请求帧: 读保持寄存器 (0x03)
-        # 格式: [ID] [03] [AddrHi] [AddrLo] [CountHi] [CountLo] [CRCLo] [CRCHi]
-        # 读取 1 个寄存器
-        req = struct.pack('>BBHH', slave_id, 3, reg_addr, 1)
-        req += calculate_crc(req)
-
-        # 清空缓冲区
-        ser.reset_input_buffer()
-        ser.reset_output_buffer()
-
-        # 发送
-        ser.write(req)
-
-        # 读取响应
-        # 预期响应: [ID] [03] [Bytes] [DataHi] [DataLo] [CRCLo] [CRCHi] = 7 字节
-        resp = ser.read(7)
-        ser.close()
-
-        if len(resp) == 0:
-            return False
-
-        if len(resp) < 5:
-            # print(f"  -> [{port}] 收到不完整数据: {resp.hex()}")
-            return False
-
-        # 简单校验 ID 和功能码
-        resp_id, resp_func = struct.unpack('>BB', resp[:2])
-        if resp_id == slave_id and (resp_func == 3 or resp_func == 0x83):
-            if resp_func == 0x83:
-                print(f"  ⚠️ [{port}] 收到异常响应 (Exception): {resp.hex()}")
-                return True # 虽然是异常，但也说明通了
-
-            # 校验 CRC (可选)
-            if len(resp) >= 7:
-                val_hi, val_lo = struct.unpack('>BB', resp[3:5])
-                val = (val_hi << 8) | val_lo
-                print(f"  ✅ [成功] 串口: {port} | 波特率: {baudrate} | ID: {slave_id} | 收到值: {val} (Hex: {resp.hex()})")
-                return True
-        else:
-            # print(f"  -> [{port}] 数据不匹配: {resp.hex()}")
-            pass
-
-    except Exception as e:
-        # print(f"  -> [{port}] 错误: {e}")
-        pass
-
-    return False
-
-if __name__ == "__main__":
-    print("=== 串口诊断工具 (原生 pyserial 版) ===")
-    print("正在扫描可用串口...")
-    ports = scan_ports()
-
-    # 过滤逻辑
+    # 过滤掉编号过大的 ttyS (通常是无效的)
     filtered_ports = []
-    for p in ports:
+    for p in sorted(ports):
         if "ttyS" in p:
             try:
                 suffix = p.replace("/dev/ttyS", "")
@@ -133,35 +54,132 @@ if __name__ == "__main__":
         else:
             filtered_ports.append(p)
 
-    print(f"待扫描串口: {filtered_ports}")
-    print("-" * 30)
+    return filtered_ports
 
-    # 扫描配置
-    target_baudrates = [9600, 19200]
-    target_parities = ['N', 'E']
-    target_unit_ids = [1, 2, 3, 4]
-    target_address = 58  # 寄存器地址
+def check_modbus_device(ser, slave_id, reg_addr=0):
+    """检测指定 ID 的设备是否存在"""
+    try:
+        # 构建 Modbus RTU 请求帧: 读保持寄存器 (0x03)
+        # 格式: [ID] [03] [AddrHi] [AddrLo] [CountHi] [CountLo] [CRCLo] [CRCHi]
+        req = struct.pack('>BBHH', slave_id, 3, reg_addr, 1)
+        req += calculate_crc(req)
 
-    found = False
-    for port in filtered_ports:
-        print(f"正在扫描串口: {port} ...")
-        for baud in target_baudrates:
-            for parity in target_parities:
-                # print(f"  尝试: {baud} {parity} ...")
-                for uid in target_unit_ids:
-                    if test_raw_modbus(port, baud, parity, uid, target_address):
-                        found = True
-                        print(f"\n🎉 找到有效配置！")
-                        print(f"   串口: {port}")
-                        print(f"   波特率: {baud}")
-                        print(f"   校验: {parity}")
-                        print(f"   站号: {uid}")
-                        break
-                if found: break
-            if found: break
-        if found: break
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+        ser.write(req)
 
-    if not found:
-        print("\n❌ 未检测到任何响应。")
-        print("请检查: 1.接线(A/B) 2.供电 3.是否开启了 RS485 模式(如果是板载串口)")
+        # 预期响应: [ID] [03] [Bytes] [DataHi] [DataLo] [CRCLo] [CRCHi] = 7 字节
+        # 或者异常响应: [ID] [83] [Err] [CRCLo] [CRCHi] = 5 字节
+        resp = ser.read(8)
+
+        if len(resp) < 5:
+            return False
+
+        resp_id, resp_func = struct.unpack('>BB', resp[:2])
+        if resp_id == slave_id:
+            # 只要 ID 匹配且功能码是 03 或 83，就认为设备存在
+            if resp_func == 3 or resp_func == 0x83:
+                return True
+    except Exception:
+        pass
+    return False
+
+def detect_port_config(port):
+    """探测串口的波特率和校验位"""
+    baudrates = [9600, 19200, 115200, 4800]
+    parities = ['N', 'E'] # 'O' 较少见，先不扫以节省时间
+
+    # 用于探测的常见 ID 和寄存器
+    probe_ids = [1, 2, 3, 4, 5, 10]
+    probe_regs = [0, 58, 100] # 0:通用, 58:特定传感器, 100:常见起始
+
+    print(f"[*] 正在分析串口配置: {port} ...")
+
+    for baud in baudrates:
+        for parity in parities:
+            try:
+                p_val = serial.PARITY_NONE
+                if parity == 'E': p_val = serial.PARITY_EVEN
+                elif parity == 'O': p_val = serial.PARITY_ODD
+
+                ser = serial.Serial(port=port, baudrate=baud, bytesize=8, parity=p_val, stopbits=1, timeout=0.1)
+                if sys.platform.startswith("linux") and ("ttyS" in port or "ttymxc" in port):
+                    try:
+                        ser.rs485_mode = serial.rs485.RS485Settings()
+                    except Exception:
+                        pass
+
+                # 快速探测
+                for uid in probe_ids:
+                    for reg in probe_regs:
+                        if check_modbus_device(ser, uid, reg):
+                            print(f"    -> 锁定配置: {baud} {parity} (在 ID={uid} 处响应)")
+                            ser.close()
+                            return baud, parity
+                ser.close()
+            except Exception:
+                pass
+    print(f"    -> 未检测到响应设备")
+    return None, None
+
+def scan_devices_on_port(port, baud, parity):
+    """在已知配置下扫描所有设备 ID"""
+    found_devices = []
+    print(f"[*] 正在扫描设备 ID (Port={port}, Baud={baud}, Parity={parity})...")
+
+    try:
+        p_val = serial.PARITY_NONE
+        if parity == 'E': p_val = serial.PARITY_EVEN
+        elif parity == 'O': p_val = serial.PARITY_ODD
+
+        ser = serial.Serial(port=port, baudrate=baud, bytesize=8, parity=p_val, stopbits=1, timeout=0.15)
+        if sys.platform.startswith("linux") and ("ttyS" in port or "ttymxc" in port):
+            try:
+                ser.rs485_mode = serial.rs485.RS485Settings()
+            except Exception:
+                pass
+
+        # 扫描 ID 1-32 (覆盖常见范围)
+        for uid in range(1, 33):
+            # 尝试读取几个常见寄存器
+            if check_modbus_device(ser, uid, 0) or check_modbus_device(ser, uid, 58):
+                print(f"    ✅ 发现设备: ID={uid}")
+                found_devices.append(uid)
+            # 稍微延时避免总线冲突
+            time.sleep(0.02)
+
+        ser.close()
+    except Exception as e:
+        print(f"    扫描出错: {e}")
+
+    return found_devices
+
+if __name__ == "__main__":
+    print("=== 串口设备全扫描工具 ===")
+    ports = scan_ports()
+    print(f"待扫描串口列表: {ports}")
+    print("-" * 40)
+
+    results = {}
+
+    for port in ports:
+        baud, parity = detect_port_config(port)
+        if baud and parity:
+            ids = scan_devices_on_port(port, baud, parity)
+            if ids:
+                results[port] = {
+                    "config": f"{baud}/{8}/{parity}/1",
+                    "ids": ids
+                }
+        print("-" * 40)
+
+    print("\n=== 扫描结果汇总 ===")
+    if not results:
+        print("未发现任何 Modbus 设备。")
+    else:
+        for port, info in results.items():
+            print(f"串口: {port}")
+            print(f"  配置: {info['config']}")
+            print(f"  设备 ID: {info['ids']}")
+            print("")
 
