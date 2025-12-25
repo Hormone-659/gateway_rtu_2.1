@@ -65,9 +65,6 @@ class SensorService:
     ) -> None:
         self._client = ModbusRtuClient(RtuConfig(port=port))
 
-        # Client for photoelectric sensors on ttyS3
-        self._client_photo = ModbusRtuClient(RtuConfig(port="/dev/ttyS3"))
-
 
         # Create independent threshold engines for each location
         # 调整阈值：之前是 1000/2000/3000 太大了，单位是 mm/s
@@ -140,8 +137,8 @@ class SensorService:
     def _read_photo_sensor(self, unit_id: int, address: int) -> float:
         """Read single register from photoelectric sensor."""
         try:
-            self._client_photo.unit_id = unit_id
-            regs = self._client_photo.read_input_registers(address, 1)
+            self._client.unit_id = unit_id
+            regs = self._client.read_input_registers(address, 1)
             return float(regs[0])
         except Exception as e:
             print(f"[sensor_service] Warning: Failed to read photo sensor (uid={unit_id}, addr={address}): {e}", file=sys.stderr)
@@ -161,8 +158,8 @@ class SensorService:
             "mid_bearing": self._unit_ids.get("mid_bearing", 4),
         }
 
-        # User requested to read addresses 1, 2, 3 for X, Y, Z
-        reg_addr = 1
+        # User requested to read addresses 58, 59, 60 for X, Y, Z vibration speed
+        reg_addr = 58
 
         # Read and evaluate Crank Left
         cl_vx, cl_vy, cl_vz = self._safe_read_xyz(mapping["crank_left"], reg_addr)
@@ -187,19 +184,11 @@ class SensorService:
         # Read Photoelectric Sensors (Belt & Line)
         # User update: Belt=6, Line(Horsehead)=5
         # User specified register address 0 (0x0000) for distance in mm
-        # belt_val = self._read_photo_sensor(6, 0)
-        # belt_lvl = self._engines["belt"].evaluate_single(belt_val)
+        belt_val = self._read_photo_sensor(6, 0)
+        belt_lvl = self._engines["belt"].evaluate_single(belt_val)
 
-        # line_val = self._read_photo_sensor(5, 0)
-        # line_lvl = self._engines["line"].evaluate_single(line_val)
-
-        # 暂时屏蔽光电传感器，强制设为正常值
-        # User request: Force belt sensor (UID 6) to level 1 fault
-        belt_val = 1000.0 # Set a value that might correspond to level 1 if needed, or just force level
-        belt_lvl = 1      # Force level 1
-
-        line_val = 0.0
-        line_lvl = 0
+        line_val = self._read_photo_sensor(5, 0)
+        line_lvl = self._engines["line"].evaluate_single(line_val)
 
         # Read electrical status
         # (elec_a, elec_b, elec_c), elec_vals = self._read_elec_status()
@@ -323,8 +312,8 @@ def main() -> None:
     # - /dev/ttyS0: 通常是 RS232 调试口
     # - /dev/ttyS1: 通常是 RS485 接口 1
     # - /dev/ttyS2: 通常是 RS485 接口 2
-    # 诊断结果确认使用 /dev/ttyS3
-    service = SensorService(port="/dev/ttyS3", unit_ids=unit_ids)
+    # 诊断结果确认使用 /dev/ttyS2
+    service = SensorService(port="/dev/ttyS2", unit_ids=unit_ids)
     _install_signal_handlers(service)
     service.run_forever()
 
